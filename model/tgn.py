@@ -31,8 +31,9 @@ class TGN(torch.nn.Module):
     self.device = device or torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     self.logger = logging.getLogger(__name__)
 
-    self.node_raw_features = torch.from_numpy(node_features.astype(np.float32)).to(device)
-    self.edge_raw_features = torch.from_numpy(edge_features.astype(np.float32)).to(device)
+    self.node_raw_features = torch.from_numpy(node_features.astype(np.float32)).to(self.device)
+
+    self.edge_raw_features = torch.from_numpy(edge_features.astype(np.float32)).to(self.device)
 
     self.n_node_features = self.node_raw_features.shape[1]
     self.n_nodes = self.node_raw_features.shape[0]
