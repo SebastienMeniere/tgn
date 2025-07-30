@@ -191,7 +191,9 @@ for i in range(args.n_runs):
     m_loss = []
 
     logger.info('start {} epoch'.format(epoch))
+    print('starting epoch', epoch)
     for k in range(0, num_batch, args.backprop_every):
+      print("batch number", k, "of", num_batch)
       loss = 0
       optimizer.zero_grad()
 
@@ -221,7 +223,7 @@ for i in range(args.n_runs):
                                                             timestamps_batch, edge_idxs_batch, NUM_NEIGHBORS)
 
         loss += criterion(pos_prob.squeeze(), pos_label) + criterion(neg_prob.squeeze(), neg_label)
-
+        print(loss)
       loss /= args.backprop_every
 
       loss.backward()
@@ -279,6 +281,8 @@ for i in range(args.n_runs):
       "total_epoch_times": total_epoch_times
     }, open(results_path, "wb"))
 
+    print("val_ap", val_ap)
+    
     total_epoch_time = time.time() - start_epoch
     total_epoch_times.append(total_epoch_time)
 
