@@ -17,9 +17,9 @@ class Data:
 
 def get_data_node_classification(dataset_name, use_validation=False):
   ### Load data and train val test split
-  graph_df = pd.read_csv('./data/ml_{}.csv'.format(dataset_name))
-  edge_features = np.load('./data/ml_{}.npy'.format(dataset_name))
-  node_features = np.load('./data/ml_{}_node.npy'.format(dataset_name))
+  graph_df = pd.read_csv('./kaggle/input/retail-data/ml_{}.csv'.format(dataset_name))
+  edge_features = np.load('./kaggle/input/retail-data/ml_{}.npy'.format(dataset_name))
+  node_features = np.load('./kaggle/input/retail-data/ml_{}_node.npy'.format(dataset_name))
 
   val_time, test_time = list(np.quantile(graph_df.ts, [0.70, 0.85]))
 
