@@ -246,11 +246,13 @@ for i in range(args.n_runs):
       # Backup memory at the end of training, so later we can restore it and use it for the
       # validation on unseen nodes
       train_memory_backup = tgn.memory.backup_memory()
+      print("backing up memory")
 
     val_ap, val_auc = eval_edge_prediction(model=tgn,
                                                             negative_edge_sampler=val_rand_sampler,
                                                             data=val_data,
                                                             n_neighbors=NUM_NEIGHBORS)
+    print("predicted edge probabilities")
     if USE_MEMORY:
       val_memory_backup = tgn.memory.backup_memory()
       # Restore memory we had at the end of training to be used when validating on new nodes.
@@ -259,14 +261,17 @@ for i in range(args.n_runs):
       tgn.memory.restore_memory(train_memory_backup)
 
     # Validate on unseen nodes
+    
     nn_val_ap, nn_val_auc = eval_edge_prediction(model=tgn,
                                                                         negative_edge_sampler=val_rand_sampler,
                                                                         data=new_node_val_data,
                                                                         n_neighbors=NUM_NEIGHBORS)
 
+    print("predicted unseen")
     if USE_MEMORY:
       # Restore memory we had at the end of validation
       tgn.memory.restore_memory(val_memory_backup)
+      print("restored memory")
 
     new_nodes_val_aps.append(nn_val_ap)
     val_aps.append(val_ap)
@@ -280,7 +285,7 @@ for i in range(args.n_runs):
       "epoch_times": epoch_times,
       "total_epoch_times": total_epoch_times
     }, open(results_path, "wb"))
-
+    
     print("val_ap", val_ap)
     
     total_epoch_time = time.time() - start_epoch
