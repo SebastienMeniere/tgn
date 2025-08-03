@@ -10,8 +10,20 @@ from pathlib import Path
 
 from evaluation.evaluation import eval_edge_prediction
 from model.tgn import TGN
-from utils.utils import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
+from utils.utils import EarlyStopMonitor, RandEdgeSampler, HistoryEdgeSampler, get_neighbor_finder
 from utils.data_processing import get_data, compute_time_statistics
+
+
+def jitter_timestamps(ts_array, src_array, dst_array, seed=0,
+                      max_jitter=5):      # seconds
+    """
+    Deterministically jitter each (src, dst, ts) by up to ±max_jitter/2 seconds,
+    with different jitter per destination to preserve a reproducible order.
+    """
+    rng = np.random.RandomState(seed)
+    # hash (src,dst,ts) into a reproducible pseudo-random in [-.5, .5]
+    noise = rng.uniform(-0.5, 0.5, size=len(ts_array))
+    return ts_array + noise * max_jitter
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -23,16 +35,16 @@ parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia 
 parser.add_argument('--bs', type=int, default=200, help='Batch_size')
 parser.add_argument('--prefix', type=str, default='', help='Prefix to name the checkpoints')
 parser.add_argument('--n_degree', type=int, default=10, help='Number of neighbors to sample')
-parser.add_argument('--n_head', type=int, default=2, help='Number of heads used in attention layer')
-parser.add_argument('--n_epoch', type=int, default=50, help='Number of epochs')
+parser.add_argument('--n_head', type=int, default=1, help='Number of heads used in attention layer')
+parser.add_argument('--n_epoch', type=int, default=10, help='Number of epochs')
 parser.add_argument('--n_layer', type=int, default=1, help='Number of network layers')
-parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
-parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping')
+parser.add_argument('--lr', type=float, default=0.00003, help='Learning rate')
+parser.add_argument('--patience', type=int, default=3, help='Patience for early stopping')
 parser.add_argument('--n_runs', type=int, default=1, help='Number of runs')
 parser.add_argument('--drop_out', type=float, default=0.1, help='Dropout probability')
 parser.add_argument('--gpu', type=int, default=0, help='Idx for the gpu to use')
-parser.add_argument('--node_dim', type=int, default=100, help='Dimensions of the node embedding')
-parser.add_argument('--time_dim', type=int, default=100, help='Dimensions of the time embedding')
+parser.add_argument('--node_dim', type=int, default=10, help='Dimensions of the node embedding')
+parser.add_argument('--time_dim', type=int, default=10, help='Dimensions of the time embedding')
 parser.add_argument('--backprop_every', type=int, default=1, help='Every how many batches to '
                                                                   'backprop')
 parser.add_argument('--use_memory', action='store_true',
@@ -47,8 +59,8 @@ parser.add_argument('--aggregator', type=str, default="last", help='Type of mess
                                                                         'aggregator')
 parser.add_argument('--memory_update_at_end', action='store_true',
                     help='Whether to update memory at the end or at the start of the batch')
-parser.add_argument('--message_dim', type=int, default=100, help='Dimensions of the messages')
-parser.add_argument('--memory_dim', type=int, default=172, help='Dimensions of the memory for '
+parser.add_argument('--message_dim', type=int, default=10, help='Dimensions of the messages')
+parser.add_argument('--memory_dim', type=int, default=100, help='Dimensions of the memory for '
                                                                 'each user')
 parser.add_argument('--different_new_nodes', action='store_true',
                     help='Whether to use disjoint set of new nodes for train and val')
@@ -110,8 +122,29 @@ logger.info(args)
 
 ### Extract data for training, validation and testing
 node_features, edge_features, full_data, train_data, val_data, test_data, new_node_val_data, \
-new_node_test_data = get_data(DATA,
-                              different_new_nodes_between_val_and_test=args.different_new_nodes, randomize_features=args.randomize_features)
+new_node_test_data = get_data(DATA, different_new_nodes_between_val_and_test=args.different_new_nodes, randomize_features=args.randomize_features)
+
+### Adding jitter:
+
+train_data.timestamps = jitter_timestamps(train_data.timestamps,
+                                          train_data.sources,
+                                          train_data.destinations,
+                                          seed=42, max_jitter=5)
+
+val_data.timestamps = jitter_timestamps(val_data.timestamps,
+                                          val_data.sources,
+                                          val_data.destinations,
+                                          seed=42, max_jitter=5)
+
+test_data.timestamps = jitter_timestamps(test_data.timestamps,
+                                          test_data.sources,
+                                          test_data.destinations,
+                                          seed=42, max_jitter=5)
+
+full_data.timestamps = jitter_timestamps(full_data.timestamps,
+                                          full_data.sources,
+                                          full_data.destinations,
+                                          seed=42, max_jitter=5)
 
 # Initialize training neighbor finder to retrieve temporal graph
 train_ngh_finder = get_neighbor_finder(train_data, args.uniform)
@@ -122,14 +155,21 @@ full_ngh_finder = get_neighbor_finder(full_data, args.uniform)
 # Initialize negative samplers. Set seeds for validation and testing so negatives are the same
 # across different runs
 # NB: in the inductive setting, negatives are sampled only amongst other new nodes
-train_rand_sampler = RandEdgeSampler(train_data.sources, train_data.destinations)
-val_rand_sampler = RandEdgeSampler(full_data.sources, full_data.destinations, seed=0)
-nn_val_rand_sampler = RandEdgeSampler(new_node_val_data.sources, new_node_val_data.destinations,
-                                      seed=1)
-test_rand_sampler = RandEdgeSampler(full_data.sources, full_data.destinations, seed=2)
-nn_test_rand_sampler = RandEdgeSampler(new_node_test_data.sources,
-                                       new_node_test_data.destinations,
-                                       seed=3)
+
+# train_rand_sampler = RandEdgeSampler(train_data.sources, train_data.destinations)
+# val_rand_sampler = RandEdgeSampler(full_data.sources, full_data.destinations, seed=0)
+# nn_val_rand_sampler = RandEdgeSampler(new_node_val_data.sources, new_node_val_data.destinations,
+#                                       seed=1)
+# test_rand_sampler = RandEdgeSampler(full_data.sources, full_data.destinations, seed=2)
+# nn_test_rand_sampler = RandEdgeSampler(new_node_test_data.sources,
+#                                        new_node_test_data.destinations,
+#                                        seed=3)
+
+train_rand_sampler = HistoryEdgeSampler(train_data.sources, train_data.destinations, train_data.timestamps)
+val_rand_sampler = HistoryEdgeSampler(val_data.sources, val_data.destinations, val_data.timestamps, seed=0)
+nn_val_rand_sampler = HistoryEdgeSampler(new_node_val_data.sources, new_node_val_data.destinations, new_node_val_data.timestamps, seed=1)
+test_rand_sampler = HistoryEdgeSampler(test_data.sources, test_data.destinations,test_data.timestamps, seed=2)
+nn_test_rand_sampler = HistoryEdgeSampler(new_node_test_data.sources, new_node_test_data.destinations, new_node_test_data.timestamps, seed=3)
 
 # Set device
 device_string = 'cuda:{}'.format(GPU) if torch.cuda.is_available() else 'cpu'
@@ -191,12 +231,9 @@ for i in range(args.n_runs):
     m_loss = []
 
     logger.info('start {} epoch'.format(epoch))
-    print('starting epoch', epoch)
     for k in range(0, num_batch, args.backprop_every):
-      print("batch number", k, "of", num_batch)
       loss = 0
       optimizer.zero_grad()
-
       # Custom loop to allow to perform backpropagation only every a certain number of batches
       for j in range(args.backprop_every):
         batch_idx = k + j
@@ -210,23 +247,26 @@ for i in range(args.n_runs):
                                             train_data.destinations[start_idx:end_idx]
         edge_idxs_batch = train_data.edge_idxs[start_idx: end_idx]
         timestamps_batch = train_data.timestamps[start_idx:end_idx]
-
+        # print(timestamps_batch)
         size = len(sources_batch)
-        _, negatives_batch = train_rand_sampler.sample(size)
-
+        # _, negatives_batch = train_rand_sampler.sample(size, timestamps_batch)
+        src_neg, negatives_batch = train_rand_sampler.sample(
+        sources_batch,                 # src_batch
+        timestamps_batch               # ts_batch 
+        )
+        
         with torch.no_grad():
           pos_label = torch.ones(size, dtype=torch.float, device=device)
           neg_label = torch.zeros(size, dtype=torch.float, device=device)
 
         tgn = tgn.train()
-        pos_prob, neg_prob = tgn.compute_edge_probabilities(sources_batch, destinations_batch, negatives_batch,
+        pos_prob, neg_prob = tgn.compute_edge_probabilities(src_neg, destinations_batch, negatives_batch,
                                                             timestamps_batch, edge_idxs_batch, NUM_NEIGHBORS)
-
         loss += criterion(pos_prob.squeeze(), pos_label) + criterion(neg_prob.squeeze(), neg_label)
-        print(loss)
+        print(loss.item(), batch_idx)
       loss /= args.backprop_every
-
       loss.backward()
+      # torch.nn.utils.clip_grad_norm_(tgn.parameters(), max_norm=0.8)
       optimizer.step()
       m_loss.append(loss.item())
 
@@ -234,25 +274,25 @@ for i in range(args.n_runs):
       # the start of time
       if USE_MEMORY:
         tgn.memory.detach_memory()
-
     epoch_time = time.time() - start_epoch
     epoch_times.append(epoch_time)
-
     ### Validation
     # Validation uses the full graph
+    print("computing validation")
     tgn.set_neighbor_finder(full_ngh_finder)
-
+    print("computed val")
     if USE_MEMORY:
       # Backup memory at the end of training, so later we can restore it and use it for the
       # validation on unseen nodes
+      print("memory backup")
       train_memory_backup = tgn.memory.backup_memory()
-      print("backing up memory")
 
     val_ap, val_auc = eval_edge_prediction(model=tgn,
                                                             negative_edge_sampler=val_rand_sampler,
                                                             data=val_data,
                                                             n_neighbors=NUM_NEIGHBORS)
-    print("predicted edge probabilities")
+    print("computed val and val auc")
+    
     if USE_MEMORY:
       val_memory_backup = tgn.memory.backup_memory()
       # Restore memory we had at the end of training to be used when validating on new nodes.
@@ -261,17 +301,14 @@ for i in range(args.n_runs):
       tgn.memory.restore_memory(train_memory_backup)
 
     # Validate on unseen nodes
-    
     nn_val_ap, nn_val_auc = eval_edge_prediction(model=tgn,
-                                                                        negative_edge_sampler=val_rand_sampler,
+                                                                        negative_edge_sampler=nn_val_rand_sampler,
                                                                         data=new_node_val_data,
                                                                         n_neighbors=NUM_NEIGHBORS)
 
-    print("predicted unseen")
     if USE_MEMORY:
       # Restore memory we had at the end of validation
       tgn.memory.restore_memory(val_memory_backup)
-      print("restored memory")
 
     new_nodes_val_aps.append(nn_val_ap)
     val_aps.append(val_ap)
@@ -285,9 +322,7 @@ for i in range(args.n_runs):
       "epoch_times": epoch_times,
       "total_epoch_times": total_epoch_times
     }, open(results_path, "wb"))
-    
-    print("val_ap", val_ap)
-    
+
     total_epoch_time = time.time() - start_epoch
     total_epoch_times.append(total_epoch_time)
 
@@ -353,3 +388,5 @@ for i in range(args.n_runs):
     tgn.memory.restore_memory(val_memory_backup)
   torch.save(tgn.state_dict(), MODEL_SAVE_PATH)
   logger.info('TGN model saved')
+
+
