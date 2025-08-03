@@ -37,6 +37,7 @@ class MLP(torch.nn.Module):
 
 class EarlyStopMonitor(object):
   def __init__(self, max_round=3, higher_better=True, tolerance=1e-10):
+
     self.max_round = max_round
     self.num_round = 0
 
@@ -98,6 +99,70 @@ def get_neighbor_finder(data, uniform, max_node_idx=None):
     adj_list[destination].append((source, edge_idx, timestamp))
 
   return NeighborFinder(adj_list, uniform=uniform)
+
+
+# === utils.py ===============================================================
+import bisect
+from collections import defaultdict
+import numpy as np
+
+class HistoryEdgeSampler:
+    """
+    True-negative sampler that guarantees
+    (customer, product) never appeared *before the current timestamp*.
+    If the pair shows up later in the stream it is still a valid negative
+    for the past – exactly what BCE expects.
+    """
+    def __init__(self, src, dst, ts, seed=None):
+        self.rng = np.random.RandomState(seed)
+        self.all_dst = np.unique(dst)
+        self.seed = None
+        if seed is not None:
+          self.seed = seed
+          self.random_state = np.random.RandomState(self.seed)
+
+        # For each src keep a sorted list of (timestamp, dst)
+        self.hist = defaultdict(list)
+        for s, d, t in zip(src, dst, ts):
+            self.hist[s].append((t, d))
+        for s in self.hist:
+            # sort once; bisect makes O(log n) queries cheap
+            self.hist[s].sort(key=lambda x: x[0])
+
+    # ---------------------------------------------------------------------- #
+    def _seen_before(self, s, d, t):
+        """
+        Binary-search the history list of src `s` and check
+        if destination `d` appeared with a timestamp < t.
+        """
+        pair_list = self.hist[s]
+        idx = bisect.bisect_left(pair_list, (t, -1))  # first item with ts >= t
+        # slice is all edges *strictly before* t
+        return any(dest == d for _, dest in pair_list[:idx])
+
+    def reset_random_state(self):
+      self.random_state = np.random.RandomState(self.seed)
+    # ---------------------------------------------------------------------- #
+    def sample(self, src_batch, ts_batch):
+        """
+        Parameters
+        ----------
+        src_batch : 1-D np.array (same order as your positive edges)
+        ts_batch  : 1-D np.array (timestamps for those edges)
+
+        Returns
+        -------
+        src_neg   : np.array  (same as input src_batch)
+        dst_neg   : np.array  (sampled negatives)
+        """
+        dst_neg = np.empty_like(src_batch)
+        for i, (s, t) in enumerate(zip(src_batch, ts_batch)):
+            while True:
+                d = self.rng.choice(self.all_dst)
+                if not self._seen_before(s, d, t):
+                    dst_neg[i] = d
+                    break
+        return src_batch, dst_neg
 
 
 class NeighborFinder:
