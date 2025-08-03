@@ -26,15 +26,14 @@ class TGN(torch.nn.Module):
                dyrep=False):
     super(TGN, self).__init__()
 
-    self.n_layers = n_layers
-    self.neighbor_finder = neighbor_finder
-    self.device = device or torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    device = self.device
+    # number of layers specified by the initiation parameters 
+    self.n_layers = n_layers # TODO! Find out where if this refers to decode or encoder
+    self.neighbor_finder = neighbor_finder #TODO! this could be redone for our specific task -- finidng more relavent neighbours 
+    self.device = device
     self.logger = logging.getLogger(__name__)
 
-    self.node_raw_features = torch.from_numpy(node_features.astype(np.float32)).to(self.device)
-
-    self.edge_raw_features = torch.from_numpy(edge_features.astype(np.float32)).to(self.device)
+    self.node_raw_features = torch.from_numpy(node_features.astype(np.float32)).to(device)
+    self.edge_raw_features = torch.from_numpy(edge_features.astype(np.float32)).to(device)
 
     self.n_node_features = self.node_raw_features.shape[1]
     self.n_nodes = self.node_raw_features.shape[0]
@@ -61,6 +60,7 @@ class TGN(torch.nn.Module):
       raw_message_dimension = 2 * self.memory_dimension + self.n_edge_features + \
                               self.time_encoder.dimension
       message_dimension = message_dimension if message_function != "identity" else raw_message_dimension
+      # TODO!! whats ups with the combination menthod not being inlcuded 
       self.memory = Memory(n_nodes=self.n_nodes,
                            memory_dimension=self.memory_dimension,
                            input_dimension=message_dimension,
@@ -96,6 +96,9 @@ class TGN(torch.nn.Module):
                                                  n_neighbors=self.n_neighbors)
 
     # MLP to compute probability on an edge given two node embeddings
+    # emb_dim = 172
+    # self.affinity_score = MergeLayer(emb_dim, emb_dim,
+    #                                  emb_dim,1)
     self.affinity_score = MergeLayer(self.n_node_features, self.n_node_features,
                                      self.n_node_features,
                                      1)
@@ -164,7 +167,7 @@ class TGN(torch.nn.Module):
         # new messages for them)
         self.update_memory(positives, self.memory.messages)
 
-        assert torch.allclose(memory[positives], self.memory.get_memory(positives), atol=1), \
+        assert torch.allclose(memory[positives], self.memory.get_memory(positives), atol=1e-5), \
           "Something wrong in how the memory was updated"
 
         # Remove messages for the positives since we have already updated the memory using them
@@ -212,9 +215,9 @@ class TGN(torch.nn.Module):
     source_node_embedding, destination_node_embedding, negative_node_embedding = self.compute_temporal_embeddings(
       source_nodes, destination_nodes, negative_nodes, edge_times, edge_idxs, n_neighbors)
 
+    
     score = self.affinity_score(torch.cat([source_node_embedding, source_node_embedding], dim=0),
-                                torch.cat([destination_node_embedding,
-                                           negative_node_embedding])).squeeze(dim=0)
+                                torch.cat([destination_node_embedding, negative_node_embedding])).squeeze(dim=0)
     pos_score = score[:n_samples]
     neg_score = score[n_samples:]
 
