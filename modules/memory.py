@@ -27,8 +27,7 @@ class Memory(nn.Module):
     # Treat memory as parameter so that it is saved and loaded together with the model
     self.memory = nn.Parameter(torch.zeros((self.n_nodes, self.memory_dimension)).to(self.device),
                                requires_grad=False)
-    self.last_update = nn.Parameter(torch.zeros(self.n_nodes).to(self.device),
-                                    requires_grad=False)
+    self.last_update = nn.Parameter(torch.zeros(self.n_nodes).to(self.device), requires_grad=False)
 
     self.messages = defaultdict(list)
 
