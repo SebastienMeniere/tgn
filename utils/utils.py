@@ -107,63 +107,42 @@ from collections import defaultdict
 import numpy as np
 
 class HistoryEdgeSampler:
-    """
-    True-negative sampler that guarantees
-    (customer, product) never appeared *before the current timestamp*.
-    If the pair shows up later in the stream it is still a valid negative
-    for the past – exactly what BCE expects.
-    """
     def __init__(self, src, dst, ts, seed=None):
-        self.rng = np.random.RandomState(seed)
+        self.seed = seed
+        self.rng  = np.random.RandomState(seed)
         self.all_dst = np.unique(dst)
-        self.seed = None
-        if seed is not None:
-          self.seed = seed
-          self.random_state = np.random.RandomState(self.seed)
 
-        # For each src keep a sorted list of (timestamp, dst)
+        # store per-source history sorted by time
         self.hist = defaultdict(list)
         for s, d, t in zip(src, dst, ts):
             self.hist[s].append((t, d))
         for s in self.hist:
-            # sort once; bisect makes O(log n) queries cheap
             self.hist[s].sort(key=lambda x: x[0])
 
-    # ---------------------------------------------------------------------- #
-    def _seen_before(self, s, d, t):
-        """
-        Binary-search the history list of src `s` and check
-        if destination `d` appeared with a timestamp < t.
-        """
-        pair_list = self.hist[s]
-        idx = bisect.bisect_left(pair_list, (t, -1))  # first item with ts >= t
-        # slice is all edges *strictly before* t
-        return any(dest == d for _, dest in pair_list[:idx])
-
     def reset_random_state(self):
-      self.random_state = np.random.RandomState(self.seed)
-    # ---------------------------------------------------------------------- #
-    def sample(self, src_batch, ts_batch):
-        """
-        Parameters
-        ----------
-        src_batch : 1-D np.array (same order as your positive edges)
-        ts_batch  : 1-D np.array (timestamps for those edges)
+        self.rng = np.random.RandomState(self.seed)
 
-        Returns
-        -------
-        src_neg   : np.array  (same as input src_batch)
-        dst_neg   : np.array  (sampled negatives)
-        """
+    # binary-search + set lookup ------------------------------------------
+    def _seen_before(self, s, d, t):
+        pair_list = self.hist[s]
+        idx = bisect.bisect_left(pair_list, (t, -1))
+        return d in {dest for _, dest in pair_list[:idx]}
+
+    # ---------------------------------------------------------------------
+    def sample(self, src_batch, ts_batch, max_tries=None):
+        if max_tries is None:
+            max_tries = len(self.all_dst)
         dst_neg = np.empty_like(src_batch)
         for i, (s, t) in enumerate(zip(src_batch, ts_batch)):
-            while True:
+            for _ in range(max_tries):
                 d = self.rng.choice(self.all_dst)
                 if not self._seen_before(s, d, t):
                     dst_neg[i] = d
                     break
+            else:
+                # fallback – could also raise
+                dst_neg[i] = self.rng.choice(self.all_dst)
         return src_batch, dst_neg
-
 
 class NeighborFinder:
   def __init__(self, adj_list, uniform=False, seed=None):
