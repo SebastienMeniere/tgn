@@ -125,12 +125,16 @@ def jitter_timestamps(ts_array, src_array, dst_array, seed=0,
 ### Extract data for training, validation and testing
 node_features, edge_features, full_data, train_data, val_data, test_data, new_node_val_data, \
 new_node_test_data = get_data(DATA, different_new_nodes_between_val_and_test=args.different_new_nodes, randomize_features=args.randomize_features)
+# --------------------------------------------------------------------------- #
+# 0.  Helpers & data
+# --------------------------------------------------------------------------- #
+node_features, edge_features, full_data, train_data, val_data, test_data, \
+new_node_val_data, new_node_test_data = get_data(
+    DATA,
+    different_new_nodes_between_val_and_test=args.different_new_nodes,
+    randomize_features=args.randomize_features)
 
-# --------------------------------------------------------------------------- #
-# 0.  Helpers
-# --------------------------------------------------------------------------- #
 def apply_jitter(df, seed=42, max_jitter=1):
-    """Deterministically jitter timestamps in ±max_jitter/2 seconds."""
     df.timestamps = jitter_timestamps(df.timestamps,
                                       df.sources,
                                       df.destinations,
@@ -138,56 +142,39 @@ def apply_jitter(df, seed=42, max_jitter=1):
                                       max_jitter=max_jitter)
     return df
 
-# --------------------------------------------------------------------------- #
-# 1.  Data -> jitter -> neighbour finders
-# --------------------------------------------------------------------------- #
 for _df in (train_data, val_data, test_data, full_data):
     apply_jitter(_df)
 
 train_ngh_finder = get_neighbor_finder(train_data, args.uniform)
 full_ngh_finder  = get_neighbor_finder(full_data,  args.uniform)
 
-# --------------------------------------------------------------------------- #
-# 2.  Negative samplers
-# --------------------------------------------------------------------------- #
-train_neg_sampler  = HistoryEdgeSampler(train_data.sources,
-                                        train_data.destinations,
+train_neg_sampler  = HistoryEdgeSampler(train_data.sources, train_data.destinations,
                                         train_data.timestamps)
+val_neg_sampler    = HistoryEdgeSampler(full_data.sources,  full_data.destinations,
+                                        full_data.timestamps, seed=0)
+nn_val_neg_sampler = HistoryEdgeSampler(full_data.sources,  full_data.destinations,
+                                        full_data.timestamps, seed=1)
+test_neg_sampler   = HistoryEdgeSampler(full_data.sources,  full_data.destinations,
+                                        full_data.timestamps, seed=2)
+nn_test_neg_sampler = HistoryEdgeSampler(full_data.sources, full_data.destinations,
+                                         full_data.timestamps, seed=3)
 
-val_neg_sampler    = HistoryEdgeSampler(full_data.sources,
-                                        full_data.destinations,
-                                        full_data.timestamps,
-                                        seed=0)
-
-nn_val_neg_sampler = HistoryEdgeSampler(full_data.sources,
-                                        full_data.destinations,
-                                        full_data.timestamps,
-                                        seed=1)
-
-test_neg_sampler   = HistoryEdgeSampler(full_data.sources,
-                                        full_data.destinations,
-                                        full_data.timestamps,
-                                        seed=2)
-
-nn_test_neg_sampler = HistoryEdgeSampler(full_data.sources,
-                                         full_data.destinations,
-                                         full_data.timestamps,
-                                         seed=3)
-
-# --------------------------------------------------------------------------- #
-# 3.  Device & time-shift statistics
-# --------------------------------------------------------------------------- #
 device = torch.device(f'cuda:{GPU}' if torch.cuda.is_available() else 'cpu')
 
 mean_ts_src, std_ts_src, mean_ts_dst, std_ts_dst = compute_time_statistics(
         full_data.sources, full_data.destinations, full_data.timestamps)
 
 # --------------------------------------------------------------------------- #
-# 4.  Training loop (1…n_runs)
+# 1.  Runs
 # --------------------------------------------------------------------------- #
 for run in range(args.n_runs):
+    logger.info(f"=========== run {run} ===========")
 
-    # ---------------- Model ------------------------------------------------- #
+    results_path = (f"results/{args.prefix}_{run}.pkl"
+                    if run > 0 else f"results/{args.prefix}.pkl")
+    Path("results/").mkdir(parents=True, exist_ok=True)
+
+    # --------------- model -------------------------------------------------- #
     tgn = TGN(neighbor_finder=train_ngh_finder,
               node_features=node_features,
               edge_features=edge_features,
@@ -212,107 +199,127 @@ for run in range(args.n_runs):
               use_source_embedding_in_message=args.use_source_embedding_in_message,
               dyrep=args.dyrep).to(device)
 
-    optimizer = torch.optim.Adam(tgn.parameters(), lr=LEARNING_RATE)
-    criterion = torch.nn.BCELoss()
-    early_stop = EarlyStopMonitor(max_round=args.patience)
+    optimizer   = torch.optim.Adam(tgn.parameters(), lr=LEARNING_RATE)
+    criterion   = torch.nn.BCELoss()
+    early_stop  = EarlyStopMonitor(max_round=args.patience)
 
-    num_inst  = len(train_data.sources)
-    num_batch = math.ceil(num_inst / BATCH_SIZE)
+    n_inst      = len(train_data.sources)
+    n_batch     = math.ceil(n_inst / BATCH_SIZE)
+    logger.info(f"training instances: {n_inst}  |  batches/epoch: {n_batch}")
 
+    # bookkeeping arrays
+    val_aps, new_val_aps, epoch_times, train_losses = [], [], [], []
+
+    # --------------- epochs ------------------------------------------------- #
     for epoch in range(NUM_EPOCH):
+        t0 = time.time()
         if USE_MEMORY:
             tgn.memory.__init_memory__()
 
         tgn.set_neighbor_finder(train_ngh_finder)
-        epoch_loss = []
+        logger.info(f"epoch {epoch}")
 
-        for b_start in range(0, num_batch, args.backprop_every):
+        # -------- mini-batches -------------------------------------------- #
+        for b_start in range(0, n_batch, args.backprop_every):
             optimizer.zero_grad()
-            loss_accum = 0.0
+            loss_acc = 0.0
 
             for step in range(args.backprop_every):
-                batch_idx = b_start + step
-                if batch_idx >= num_batch:
+                b_idx = b_start + step
+                if b_idx >= n_batch:
                     break
 
-                s = batch_idx * BATCH_SIZE
-                e = min(num_inst, s + BATCH_SIZE)
+                s = b_idx * BATCH_SIZE
+                e = min(n_inst, s + BATCH_SIZE)
 
-                src = train_data.sources[s:e]
-                dst = train_data.destinations[s:e]
-                ts  = train_data.timestamps[s:e]
+                src  = train_data.sources[s:e]
+                dst  = train_data.destinations[s:e]
+                ts   = train_data.timestamps[s:e]
                 eidx = train_data.edge_idxs[s:e]
 
-                # Negatives
                 _, dst_neg = train_neg_sampler.sample(src, ts)
 
-                # Labels
                 y_pos = torch.ones(len(src), device=device)
                 y_neg = torch.zeros(len(src), device=device)
 
-                # Forward
                 p_pos, p_neg = tgn.compute_edge_probabilities(
                                    src, dst, dst_neg, ts, eidx, NUM_NEIGHBORS)
 
-                loss_accum += (criterion(p_pos.squeeze(), y_pos) +
-                               criterion(p_neg.squeeze(), y_neg))
+                loss_acc += (criterion(p_pos.squeeze(), y_pos) +
+                             criterion(p_neg.squeeze(), y_neg))
 
-            # Back-prop every k batches
-            loss = loss_accum / args.backprop_every
+            loss = loss_acc / args.backprop_every
             loss.backward()
             optimizer.step()
             if USE_MEMORY:
                 tgn.memory.detach_memory()
 
-            print(f"batch {batch_idx:05d} | loss {loss.item():.4f}")
-            epoch_loss.append(loss.item())
+            print(f"batch {b_idx:05d} | loss {loss.item():.4f}")
+            train_losses.append(loss.item())
 
-        # ---------------- Validation ------------------------------------------- #
+        # --------------- validation --------------------------------------- #
         tgn.set_neighbor_finder(full_ngh_finder)
+        if USE_MEMORY:
+            mem_after_train = tgn.memory.backup_memory()
+
+        val_ap, _ = eval_edge_prediction(tgn, val_neg_sampler,
+                                         val_data, NUM_NEIGHBORS)
 
         if USE_MEMORY:
-            mem_train = tgn.memory.backup_memory()      # state after epoch-train
+            mem_after_val = tgn.memory.backup_memory()
+            tgn.memory.restore_memory(mem_after_train)
 
-        # 1) OLD-node validation (updates memory)
-        val_ap, _ = eval_edge_prediction(
-            tgn, val_neg_sampler, val_data, NUM_NEIGHBORS)
-
-        if USE_MEMORY:
-            mem_val = tgn.memory.backup_memory()        # state *after* val_ap
-            tgn.memory.restore_memory(mem_train)        # roll back
-
-        # 2) NEW-node validation (must not see val edges)
-        nn_val_ap, _ = eval_edge_prediction(
-            tgn, nn_val_neg_sampler, new_node_val_data, NUM_NEIGHBORS)
+        nn_val_ap, _ = eval_edge_prediction(tgn, nn_val_neg_sampler,
+                                            new_node_val_data, NUM_NEIGHBORS)
 
         if USE_MEMORY:
-            tgn.memory.restore_memory(mem_val)          # keep val updates for next epoch
+            tgn.memory.restore_memory(mem_after_val)
 
-        # Early stopping ---------------------------------------------------- #
+        val_aps.append(val_ap); new_val_aps.append(nn_val_ap)
+        logger.info(f"val AP={val_ap:.4f}  |  new-node AP={nn_val_ap:.4f}")
+
+        # --------------- early stop + checkpoint -------------------------- #
+        ckpt_path = f"./saved_checkpoints/{args.prefix}-run{run}-epoch{epoch}.pth"
+        torch.save(tgn.state_dict(), ckpt_path)
+
         if early_stop.early_stop_check(val_ap):
-            best_path = f"./saved_checkpoints/{args.prefix}-best.pth"
+            best_epoch = early_stop.best_epoch
+            best_path  = f"./saved_checkpoints/{args.prefix}-run{run}-epoch{best_epoch}.pth"
             tgn.load_state_dict(torch.load(best_path))
             tgn.eval()
+            logger.info(f"early-stop → reload best epoch {best_epoch}")
             break
-        else:
-            torch.save(tgn.state_dict(),
-                       f"./saved_checkpoints/{args.prefix}-epoch{epoch}.pth")
 
-    # --------------------- Test ------------------------------------------- #
+        epoch_times.append(time.time() - t0)
+
+        # dump interim results
+        pickle.dump({"val_aps": val_aps,
+                     "new_val_aps": new_val_aps,
+                     "train_losses": train_losses,
+                     "epoch_times": epoch_times},
+                    open(results_path, "wb"))
+
+    # --------------- test -------------------------------------------------- #
+    tgn.set_neighbor_finder(full_ngh_finder)
     if USE_MEMORY:
-        mem_backup = tgn.memory.backup_memory()
+        mem_pre_test = tgn.memory.backup_memory()
 
-    test_ap,  _ = eval_edge_prediction(tgn, test_neg_sampler,
-                                       test_data, NUM_NEIGHBORS)
+    test_ap, _    = eval_edge_prediction(tgn, test_neg_sampler,
+                                         test_data, NUM_NEIGHBORS)
+    
+    if USE_MEMORY:
+            mem_after_val = tgn.memory.backup_memory()
+            tgn.memory.restore_memory(mem_pre_test)
+    
     nn_test_ap, _ = eval_edge_prediction(tgn, nn_test_neg_sampler,
                                          new_node_test_data, NUM_NEIGHBORS)
+    
+    if USE_MEMORY:
+            tgn.memory.restore_memory(mem_after_val)
 
-    # Log results
-    logger.info(f"run {run}: test AP={test_ap:.4f} – new-node AP={nn_test_ap:.4f}")
+    logger.info(f"TEST AP={test_ap:.4f}  |  new-node AP={nn_test_ap:.4f}")
 
-    # Persist final model
-    torch.save(tgn.state_dict(),
-               f'./saved_models/{args.prefix}-{args.data}-run{run}.pth')
-
-
-
+    # --------------- save final model ------------------------------------- #
+    final_path = f"./saved_models/{args.prefix}-{args.data}-run{run}.pth"
+    torch.save(tgn.state_dict(), final_path)
+    logger.info(f"model saved → {final_path}")
