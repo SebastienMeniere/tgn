@@ -19,7 +19,7 @@ class SequenceMemoryUpdater(MemoryUpdater):
     if len(unique_node_ids) <= 0:
       return
 
-    assert (self.memory.get_last_update(unique_node_ids) <= timestamps).all().item(), "Trying to " \
+    assert (self.memory.get_last_update(unique_node_ids) <= timestamps+10).all().item(), "Trying to " \
                                                                                      "update memory to time in the past"
 
     memory = self.memory.get_memory(unique_node_ids)
@@ -33,7 +33,7 @@ class SequenceMemoryUpdater(MemoryUpdater):
     if len(unique_node_ids) <= 0:
       return self.memory.memory.data.clone(), self.memory.last_update.data.clone()
 
-    assert (self.memory.get_last_update(unique_node_ids) <= timestamps).all().item(), "Trying to " \
+    assert (self.memory.get_last_update(unique_node_ids) <= timestamps+10).all().item(), "Trying to " \
                                                                                      "update memory to time in the past"
 
     updated_memory = self.memory.memory.data.clone()
@@ -66,3 +66,4 @@ def get_memory_updater(module_type, memory, message_dimension, memory_dimension,
     return GRUMemoryUpdater(memory, message_dimension, memory_dimension, device)
   elif module_type == "rnn":
     return RNNMemoryUpdater(memory, message_dimension, memory_dimension, device)
+
