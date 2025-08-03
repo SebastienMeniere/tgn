@@ -18,11 +18,13 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
     # size as the training batch size, since it allows the memory to be updated more frequently,
     # and later test batches to access information from interactions in previous test batches
     # through the memory
-    TEST_BATCH_SIZE = batch_size
+    TEST_BATCH_SIZE = 10000
     num_test_instance = len(data.sources)
     num_test_batch = math.ceil(num_test_instance / TEST_BATCH_SIZE)
 
+    print("runnning Eval")
     for k in range(num_test_batch):
+      print(k)
       s_idx = k * TEST_BATCH_SIZE
       e_idx = min(num_test_instance, s_idx + TEST_BATCH_SIZE)
       sources_batch = data.sources[s_idx:e_idx]
@@ -31,7 +33,7 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
       edge_idxs_batch = data.edge_idxs[s_idx: e_idx]
 
       size = len(sources_batch)
-      _, negative_samples = negative_edge_sampler.sample(size)
+      _, negative_samples = negative_edge_sampler.sample(sources_batch, timestamps_batch)
 
       pos_prob, neg_prob = model.compute_edge_probabilities(sources_batch, destinations_batch,
                                                             negative_samples, timestamps_batch,
@@ -42,6 +44,8 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
 
       val_ap.append(average_precision_score(true_label, pred_score))
       val_auc.append(roc_auc_score(true_label, pred_score))
+      print(average_precision_score(true_label, pred_score))
+      print(roc_auc_score(true_label, pred_score))
 
   return np.mean(val_ap), np.mean(val_auc)
 
@@ -74,3 +78,4 @@ def eval_node_classification(tgn, decoder, data, edge_idxs, batch_size, n_neighb
 
   auc_roc = roc_auc_score(data.labels, pred_prob)
   return auc_roc
+
