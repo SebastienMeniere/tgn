@@ -18,7 +18,7 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
     # size as the training batch size, since it allows the memory to be updated more frequently,
     # and later test batches to access information from interactions in previous test batches
     # through the memory
-    TEST_BATCH_SIZE = 10000
+    TEST_BATCH_SIZE = batch_size
     num_test_instance = len(data.sources)
     num_test_batch = math.ceil(num_test_instance / TEST_BATCH_SIZE)
 
@@ -35,7 +35,7 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
       size = len(sources_batch)
       _, negative_samples = negative_edge_sampler.sample(sources_batch, timestamps_batch)
 
-      pos_prob, neg_prob = model.compute_edge_probabilities(sources_batch, destinations_batch,
+      pos_prob, neg_prob = model.compute_edge_probabilities(_, destinations_batch,
                                                             negative_samples, timestamps_batch,
                                                             edge_idxs_batch, n_neighbors)
 
