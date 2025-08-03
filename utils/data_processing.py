@@ -16,9 +16,9 @@ class Data:
 
 def get_data_node_classification(dataset_name, use_validation=False):
   ### Load data and train val test split
-  graph_df = pd.read_csv('./data/ml_{}.csv'.format(dataset_name))
-  edge_features = np.load('./data/ml_{}.npy'.format(dataset_name))
-  node_features = np.load('./data/ml_{}_node.npy'.format(dataset_name))
+  graph_df = pd.read_csv('/kaggle/input/retail-data3/ml_{}.csv'.format(dataset_name))
+  edge_features = np.load('/kaggle/input/retail-data3/ml_{}.npy'.format(dataset_name))
+  node_features = np.load('/kaggle/input/retail-data3/ml_{}_node.npy'.format(dataset_name))
   # node_features = np.random.randn(node_features.shape[0], 128).astype(np.float32)
   val_time, test_time = list(np.quantile(graph_df.ts, [0.70, 0.85]))
 
@@ -50,11 +50,11 @@ def get_data_node_classification(dataset_name, use_validation=False):
 
 def get_data(dataset_name, different_new_nodes_between_val_and_test=False, randomize_features=False):
   ### Load data and train val test split
-  graph_df = pd.read_csv('./data/ml_{}.csv'.format(dataset_name))
+  graph_df = pd.read_csv('/kaggle/input/retail-data3/ml_{}.csv'.format(dataset_name))
   print("Graph")
-  edge_features = np.load('./data/ml_{}.npy'.format(dataset_name))
+  edge_features = np.load('/kaggle/input/retail-data3/ml_{}.npy'.format(dataset_name))
   print("edges")
-  node_features = np.load('./data/ml_{}_node.npy'.format(dataset_name), allow_pickle=True) 
+  node_features = np.load('/kaggle/input/retail-data3/ml_{}_node.npy'.format(dataset_name), allow_pickle=True) 
   print("got em")
   if randomize_features:
     node_features = np.random.rand(node_features.shape[0], node_features.shape[1])
